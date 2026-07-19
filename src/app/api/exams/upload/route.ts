@@ -4,7 +4,6 @@ import { getOrCreateAppUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { uploadFile } from "@/lib/storage";
 import { sha256 } from "@/lib/hash";
-import { ocrAndExtractQueue } from "@/lib/queue/queues";
 
 const ALLOWED_MIME_TYPES = ["application/pdf", "image/png", "image/jpeg", "image/webp"];
 const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024; // 20MB ต่อไฟล์
@@ -31,7 +30,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "กรุณาแนบไฟล์อย่างน้อย 1 ไฟล์" }, { status: 400 });
   }
 
-  // เคสที่ 1: อัปโหลด PDF เดี่ยว — จำนวนหน้ารู้หลัง OCR เท่านั้น
   const isSinglePdf = files.length === 1 && files[0].type === "application/pdf";
 
   for (const file of files) {
@@ -46,8 +44,6 @@ export async function POST(request: Request) {
     }
   }
 
-  // hash รวมของทุกไฟล์ในชุดอัปโหลดนี้ — ใช้กันการประมวลผลซ้ำถ้า user
-  // อัปโหลดชุดเดิมซ้ำ (เช่น กด submit สองครั้งโดยไม่ตั้งใจ)
   const buffers = await Promise.all(files.map(async (f) => Buffer.from(await f.arrayBuffer())));
   const combinedHash = sha256(Buffer.concat(buffers.map((b) => sha256(b)).map((h) => Buffer.from(h))));
 
@@ -56,7 +52,6 @@ export async function POST(request: Request) {
   });
 
   if (existingExam) {
-    // ไฟล์ชุดนี้เคยอัปโหลดแล้ว — ไม่สร้างใหม่ ไม่ enqueue ซ้ำ ส่ง exam เดิมกลับไปเลย
     return NextResponse.json({ examId: existingExam.id, status: existingExam.status, deduped: true });
   }
 
@@ -72,8 +67,6 @@ export async function POST(request: Request) {
   });
 
   if (isSinglePdf) {
-    // PDF: เก็บไฟล์ต้นฉบับไว้ที่ Exam โดยตรง worker จะสร้าง ExamPage
-    // ทีละหน้าเองหลังจากรู้ผล OCR ว่ามีกี่หน้า
     const { url } = await uploadFile({
       path: `${appUser.id}/${exam.id}/source.pdf`,
       buffer: buffers[0],
@@ -85,7 +78,6 @@ export async function POST(request: Request) {
       data: { sourceFileUrl: url, sourceMimeType: "application/pdf" },
     });
   } else {
-    // รูปภาพหลายรูป: รู้จำนวนหน้าแน่นอนตั้งแต่ตอนอัปโหลด สร้าง ExamPage ได้เลย
     await Promise.all(
       files.map(async (file, index) => {
         const { url } = await uploadFile({
@@ -106,7 +98,80 @@ export async function POST(request: Request) {
     );
   }
 
-  await ocrAndExtractQueue.add("process-exam", { examId: exam.id });
+  // 🚀 ประมวลผล AI และบล็อกขบวนการทำงานให้เสร็จตรง ๆ ก่อนตอบกลับหน้าบ้านเพื่อไม่ให้ Vercel ตัดไฟแครชกลางทาง
+  try {
+    const { runOcr, extractQuestionsWithAnswerKey, extractQuestionsWithoutAnswerKey } = await import("@/lib/ai/gateway");
 
-  return NextResponse.json({ examId: exam.id, status: "PROCESSING", deduped: false });
+    let combinedOcrText = "";
+
+    // 1. ทำ OCR ตามประเภทไฟล์
+    const ocrPages = await runOcr({
+      fileBuffer: buffers[0],
+      mimeType: files[0].type,
+      userId: appUser.id,
+    });
+    combinedOcrText = ocrPages.join("\n");
+
+    // 2. ส่งข้อความ OCR ไปให้ AI แยกร่างและวิเคราะห์สร้างควิซ
+    let questions = [];
+    if (hasAnswerKey) {
+      questions = await extractQuestionsWithAnswerKey({
+        ocrText: combinedOcrText,
+        userId: appUser.id,
+      });
+    } else {
+      questions = await extractQuestionsWithoutAnswerKey({
+        ocrText: combinedOcrText,
+        userId: appUser.id,
+      });
+    }
+
+    // 3. บันทึกข้อสอบและตัวเลือกลงฐานข้อมูล Supabase ผ่าน Prisma
+    for (const q of questions as any) {
+      await prisma.question.create({
+        data: {
+          examId: exam.id,
+          content: q.content,
+          difficulty: q.difficulty.toUpperCase() as any, // แปลงเป็น EASY, MEDIUM, HARD
+          topic: q.topic,
+          choices: {
+            create: (q.choices as any[]).map((c: any, idx: any) => ({
+              label: c.label,
+              content: c.content,
+              order: idx,
+              isCorrect: c.label === q.correct_label,
+            })),
+          },
+          explanation: q.explanation?.reasoning || "",
+        },
+      });
+    }
+
+    // 4. อัปเดตสถานะชุดข้อสอบเป็นสำเร็จ
+    await prisma.exam.update({
+      where: { id: exam.id },
+      data: { status: "READY" },
+    });
+
+    if (!isSinglePdf) {
+      await prisma.examPage.updateMany({
+        where: { examId: exam.id },
+        data: { status: "EXTRACTED" },
+      });
+    }
+
+    // ตอบกลับหน้าบ้านพร้อมบอกสถานะสำเร็จเพื่อให้เปลี่ยนหน้าทันที
+    return NextResponse.json({ examId: exam.id, status: "READY", deduped: false });
+
+  } catch (aiError) {
+    console.error("Vercel AI Processing error:", aiError);
+    
+    // อัปเดตสถานะเป็น FAILED ในฐานข้อมูล
+    await prisma.exam.update({
+      where: { id: exam.id },
+      data: { status: "FAILED" },
+    });
+
+    return NextResponse.json({ error: "การประมวลผลข้อสอบล้มเหลว" }, { status: 500 });
+  }
 }
