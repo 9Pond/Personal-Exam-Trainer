@@ -1,7 +1,7 @@
 "use client";
 
 import { createClient } from "@/lib/supabase/client";
-import { useState } from "react";
+import { useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 const OAUTH_PROVIDERS = [
@@ -10,7 +10,8 @@ const OAUTH_PROVIDERS = [
   { id: "apple", label: "Apple" },
 ] as const;
 
-export default function LoginPage() {
+// 1. แยกเนื้อหาฟอร์มล็อกอินออกมาเป็นคอมโพเนนต์ย่อยที่มีการใช้ useSearchParams
+function LoginForm() {
   const supabase = createClient();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -66,75 +67,84 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center px-4">
-      <div className="w-full max-w-sm space-y-6">
-        <div className="text-center space-y-1">
-          <h1 className="text-2xl font-semibold">AI Quiz Platform</h1>
-          <p className="text-sm text-muted-foreground">
-            {mode === "signin" ? "เข้าสู่ระบบเพื่อเริ่มเรียนรู้" : "สร้างบัญชีใหม่"}
-          </p>
-        </div>
-
-        <div className="space-y-2">
-          {OAUTH_PROVIDERS.map((provider) => (
-            <button
-              key={provider.id}
-              onClick={() => handleOAuth(provider.id)}
-              className="w-full rounded-lg border py-2.5 text-sm font-medium hover:bg-muted transition-colors"
-            >
-              เข้าสู่ระบบด้วย {provider.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex items-center gap-3 text-xs text-muted-foreground">
-          <div className="h-px flex-1 bg-muted" />
-          หรือใช้อีเมล
-          <div className="h-px flex-1 bg-muted" />
-        </div>
-
-        <form onSubmit={handleEmailAuth} className="space-y-3">
-          <input
-            type="email"
-            required
-            placeholder="อีเมล"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="w-full rounded-lg border px-3 py-2.5 text-sm"
-          />
-          <input
-            type="password"
-            required
-            minLength={8}
-            placeholder="รหัสผ่าน"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full rounded-lg border px-3 py-2.5 text-sm"
-          />
-
-          {error && <p className="text-sm text-red-500">{error}</p>}
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
-          >
-            {loading ? "กำลังดำเนินการ..." : mode === "signin" ? "เข้าสู่ระบบ" : "สมัครสมาชิก"}
-          </button>
-        </form>
-
-        <div className="flex items-center justify-between text-xs text-muted-foreground">
-          <button onClick={handleForgotPassword} className="hover:underline">
-            ลืมรหัสผ่าน?
-          </button>
-          <button
-            onClick={() => setMode(mode === "signin" ? "signup" : "signin")}
-            className="hover:underline"
-          >
-            {mode === "signin" ? "ยังไม่มีบัญชี? สมัครสมาชิก" : "มีบัญชีแล้ว? เข้าสู่ระบบ"}
-          </button>
-        </div>
+    <div className="w-full max-w-sm space-y-6">
+      <div className="text-center space-y-1">
+        <h1 className="text-2xl font-semibold">AI Quiz Platform</h1>
+        <p className="text-sm text-muted-foreground">
+          {mode === "signin" ? "เข้าสู่ระบบเพื่อเริ่มเรียนรู้" : "สร้างบัญชีใหม่"}
+        </p>
       </div>
+
+      <div className="space-y-2">
+        {OAUTH_PROVIDERS.map((provider) => (
+          <button
+            key={provider.id}
+            onClick={() => handleOAuth(provider.id)}
+            className="w-full rounded-lg border py-2.5 text-sm font-medium hover:bg-muted transition-colors"
+          >
+            เข้าสู่ระบบด้วย {provider.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex items-center gap-3 text-xs text-muted-foreground">
+        <div className="h-px flex-1 bg-muted" />
+        หรือใช้อีเมล
+        <div className="h-px flex-1 bg-muted" />
+      </div>
+
+      <form onSubmit={handleEmailAuth} className="space-y-3">
+        <input
+          type="email"
+          required
+          placeholder="อีเมล"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          className="w-full rounded-lg border px-3 py-2.5 text-sm"
+        />
+        <input
+          type="password"
+          required
+          minLength={8}
+          placeholder="รหัสผ่าน"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          className="w-full rounded-lg border px-3 py-2.5 text-sm"
+        />
+
+        {error && <p className="text-sm text-red-500">{error}</p>}
+
+        <button
+          type="submit"
+          disabled={loading}
+          className="w-full rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
+        >
+          {loading ? "กำลังดำเนินการ..." : mode === "signin" ? "เข้าสู่ระบบ" : "สมัครสมาชิก"}
+        </button>
+      </form>
+
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <button onClick={handleForgotPassword} className="hover:underline">
+          ลืมรหัสผ่าน?
+        </button>
+        <button
+          onClick={() => setMode(mode === "signin" ? "signup" : "signin")}
+          className="hover:underline"
+        >
+          {mode === "signin" ? "ยังไม่มีบัญชี? สมัครสมาชิก" : "มีบัญชีแล้ว? เข้าสู่ระบบ"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// 2. หน้าหลักตัวนอก ทำการครอบฟอร์มด้วย Suspense เพื่อแก้บั๊กตอนพรีเรนเดอร์ (Build)
+export default function LoginPage() {
+  return (
+    <main className="flex min-h-screen items-center justify-center px-4">
+      <Suspense fallback={<p className="text-sm text-muted-foreground">กำลังโหลด...</p>}>
+        <LoginForm />
+      </Suspense>
     </main>
   );
 }
