@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { useRouter } from "next/navigation";
 
 type ExamStatus = {
   examId: string;
@@ -11,6 +12,7 @@ type ExamStatus = {
 };
 
 export default function UploadPage() {
+  const router = useRouter(); // เพิ่ม router เพื่อใช้เปลี่ยนหน้า
   const [title, setTitle] = useState("");
   const [subject, setSubject] = useState("");
   const [hasAnswerKey, setHasAnswerKey] = useState(true);
@@ -35,6 +37,8 @@ export default function UploadPage() {
 
       if (data.status === "READY" || data.status === "FAILED" || data.status === "PARTIAL") {
         if (pollRef.current) clearInterval(pollRef.current);
+        // เมื่อประมวลผลเสร็จแล้วให้ไปหน้าข้อสอบ
+        if (data.status === "READY") router.push(`/exams/${examId}`);
       }
     }, 2500);
   }
@@ -62,6 +66,12 @@ export default function UploadPage() {
 
       if (!res.ok) {
         setError(data.error ?? "อัปโหลดไม่สำเร็จ");
+        return;
+      }
+
+      // แก้ไขตรงนี้: ถ้าไฟล์ซ้ำ ให้ไปที่หน้าข้อสอบทันที
+      if (data.deduped) {
+        router.push(`/exams/${data.examId}`);
         return;
       }
 
@@ -140,18 +150,7 @@ export default function UploadPage() {
               }
             </span>
           </p>
-          {examStatus.pages.length > 0 && (
-            <p className="text-muted-foreground">
-              หน้าที่ประมวลผลแล้ว: {examStatus.pages.filter((p) => p.status === "EXTRACTED").length}/
-              {examStatus.pages.length}
-            </p>
-          )}
           <p className="text-muted-foreground">จำนวนคำถามที่สร้างได้: {examStatus.questionCount}</p>
-          {examStatus.needsReviewCount > 0 && (
-            <p className="text-amber-600">
-              ⚠️ {examStatus.needsReviewCount} ข้อ มีความมั่นใจต่ำ ควรตรวจสอบก่อนใช้งาน
-            </p>
-          )}
         </div>
       )}
     </main>
