@@ -5,9 +5,6 @@ import { prisma } from "@/lib/prisma";
 import { uploadFile } from "@/lib/storage";
 import { sha256 } from "@/lib/hash";
 
-const ALLOWED_MIME_TYPES = ["application/pdf", "image/png", "image/jpeg", "image/webp"];
-const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024;
-
 export async function POST(request: Request) {
   console.log("DEBUG: เริ่มต้น API /api/exams/upload");
   const supabase = createClient();
@@ -26,10 +23,22 @@ export async function POST(request: Request) {
   const buffers = await Promise.all(files.map(async (f) => Buffer.from(await f.arrayBuffer())));
   const combinedHash = sha256(Buffer.concat(buffers.map((b) => sha256(b)).map((h) => Buffer.from(h))));
 
+  // แก้ไข: ถ้าเจอไฟล์ซ้ำ ให้ดึงข้อมูลเดิมออกมาแสดงผลแทนการหยุดทำงาน
   const existingExam = await prisma.exam.findUnique({
     where: { userId_fileHash: { userId: appUser.id, fileHash: combinedHash } },
+    include: { questions: { include: { choices: true } } }
   });
-  if (existingExam) return NextResponse.json({ examId: existingExam.id, status: existingExam.status, deduped: true });
+
+  if (existingExam) {
+    console.log("DEBUG: พบไฟล์ซ้ำในระบบ ดึงข้อมูลเดิมมาแสดงผล ID:", existingExam.id);
+    return NextResponse.json({ 
+      success: true, 
+      examId: existingExam.id, 
+      status: existingExam.status, 
+      questions: existingExam.questions,
+      deduped: true 
+    });
+  }
 
   const exam = await prisma.exam.create({
     data: { userId: appUser.id, title, hasAnswerKey, fileHash: combinedHash, status: "PROCESSING" },
@@ -48,7 +57,7 @@ export async function POST(request: Request) {
   }
   console.log("DEBUG: อัปโหลดไฟล์เสร็จสิ้น เข้าสู่ช่วงประมวลผล AI...");
 
-  // 🚀 รัน AI พร้อม Log ตรวจสอบ
+  // 🚀 รัน AI
   try {
     const { runOcr, extractQuestionsWithAnswerKey, extractQuestionsWithoutAnswerKey } = await import("@/lib/ai/gateway");
     
@@ -86,7 +95,7 @@ export async function POST(request: Request) {
     }
 
     await prisma.exam.update({ where: { id: exam.id }, data: { status: "READY" } });
-    console.log("DEBUG: ประมวลผลทั้งหมดสำเร็จสถานะเป็น READY");
+    console.log("DEBUG: ประมวลผลสำเร็จ");
 
     return NextResponse.json({ examId: exam.id, status: "READY", deduped: false });
 
