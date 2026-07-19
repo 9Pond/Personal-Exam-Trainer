@@ -1,0 +1,477 @@
+// ============================================================================
+// AI Quiz Platform — Prisma Schema
+// อ้างอิงจาก System Architecture Document v1.0
+// ============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL") // ใช้ pooled connection (pgbouncer) ตอน runtime
+  directUrl  = env("DIRECT_URL") // ใช้ direct connection ตอน `prisma migrate`
+  extensions = [pgvector(map: "vector")]
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+enum ExamStatus {
+  PROCESSING // อัปโหลดแล้ว รอ OCR/Extraction
+  READY // พร้อมสร้าง Quiz
+  FAILED // OCR/Extraction ล้มเหลว
+  PARTIAL // บางหน้าสำเร็จ บางหน้า fail
+}
+
+enum PageStatus {
+  PENDING
+  OCR_DONE
+  EXTRACTED
+  FAILED
+}
+
+enum Difficulty {
+  EASY
+  MEDIUM
+  HARD
+}
+
+enum QuizMode {
+  PRACTICE
+  EXAM
+  TIMED
+  WRONG_ONLY
+  RANDOM
+}
+
+enum Visibility {
+  PUBLIC
+  PRIVATE
+  UNLISTED
+}
+
+enum ShareTargetType {
+  QUIZ
+  FOLDER
+  FLASHCARD_SET
+}
+
+enum BookmarkTargetType {
+  QUIZ
+  FLASHCARD_SET
+  FOLDER
+}
+
+enum AuthProvider {
+  EMAIL
+  GOOGLE
+  GITHUB
+  APPLE
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  DONE
+  FAILED
+}
+
+// ============================================================================
+// USERS & AUTH
+// ============================================================================
+
+model User {
+  // ไม่ใช้ @default(cuid()) — id ต้องตรงกับ Supabase auth.users.id (uuid)
+  // เพื่อผูก identity (auth) กับ business data (public schema) เข้าด้วยกัน
+  id           String    @id
+  email        String    @unique
+  passwordHash String? // null ถ้า login ผ่าน OAuth เท่านั้น
+  displayName  String?
+  avatarUrl    String?
+  authProvider AuthProvider @default(EMAIL)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  exams          Exam[]
+  quizzes        Quiz[]
+  attempts       Attempt[]
+  flashcardSets  FlashcardSet[]
+  folders        Folder[]
+  wrongQuestions WrongQuestion[]
+  sharedLinks    SharedLink[]
+  bookmarks      Bookmark[]
+  dashboardStat  DashboardStat?
+  aiUsageLogs    AiUsageLog[]
+
+  @@index([email])
+}
+
+model DashboardStat {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  totalQuizzesTaken Int      @default(0)
+  totalFlashcards   Int      @default(0)
+  currentStreak     Int      @default(0)
+  longestStreak     Int      @default(0)
+  lastActiveDate    DateTime?
+  averageScore      Float    @default(0)
+  totalStudyMinutes Int      @default(0)
+  updatedAt         DateTime @updatedAt
+}
+
+// ============================================================================
+// EXAMS / INGESTION PIPELINE
+// ============================================================================
+
+model Exam {
+  id          String     @id @default(cuid())
+  userId      String
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title       String
+  subject     String?
+  status      ExamStatus @default(PROCESSING)
+  fileHash    String // sha256 ของไฟล์ต้นฉบับ — ใช้กัน OCR ซ้ำ (idempotency)
+  hasAnswerKey Boolean   @default(true) // false = ต้องให้ AI คิดคำตอบเอง + confidence
+  sourceFileUrl String? // ไฟล์ดิบที่อัปโหลด (สำคัญมากสำหรับ PDF ที่ยังไม่รู้จำนวนหน้าจนกว่าจะ OCR)
+  sourceMimeType String?
+  folderId    String?
+  folder      Folder?    @relation(fields: [folderId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pages     ExamPage[]
+  questions Question[]
+
+  @@unique([userId, fileHash]) // user เดียวกันอัปโหลดไฟล์ซ้ำ → ไม่ประมวลผลใหม่
+  @@index([userId, status])
+}
+
+model ExamPage {
+  id           String     @id @default(cuid())
+  examId       String
+  exam         Exam       @relation(fields: [examId], references: [id], onDelete: Cascade)
+  pageNumber   Int
+  fileUrl      String // URL ใน Object Storage (R2/S3/Supabase Storage)
+  thumbnailUrl String?
+  status       PageStatus @default(PENDING)
+
+  ocrText OcrText?
+
+  createdAt DateTime @default(now())
+
+  @@unique([examId, pageNumber])
+  @@index([examId])
+}
+
+model OcrText {
+  id         String   @id @default(cuid())
+  examPageId String   @unique
+  examPage   ExamPage @relation(fields: [examPageId], references: [id], onDelete: Cascade)
+  rawText    String   @db.Text // ผลลัพธ์ OCR ดิบ — เก็บถาวร ห้าม OCR ใหม่
+  language   String? // th, en, mixed
+  ocrProvider String // "mistral-ocr" | "gemini-vision"
+
+  createdAt DateTime @default(now())
+}
+
+// ============================================================================
+// QUESTIONS (Extraction Output — Source of Truth สำหรับ Quiz ทั้งหมด)
+// ============================================================================
+
+model Topic {
+  id        String     @id @default(cuid())
+  name      String     @unique
+  subject   String? // เช่น "Mathematics", "Biology"
+  questions Question[]
+}
+
+model Question {
+  id            String     @id @default(cuid())
+  examId        String
+  exam          Exam       @relation(fields: [examId], references: [id], onDelete: Cascade)
+  topicId       String?
+  topic         Topic?     @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  content       String     @db.Text
+  difficulty    Difficulty @default(MEDIUM)
+  confidence    Float? // 0.0 - 1.0 จาก AI (เฉพาะกรณีไม่มีเฉลยต้นฉบับ)
+  needsReview   Boolean    @default(false) // true ถ้า confidence < 0.7
+  hasOriginalAnswerKey Boolean @default(true)
+  embedding     Unsupported("vector(1536)")? // สำหรับ semantic search (pgvector)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  choices        Choice[]
+  answer         Answer?
+  explanation    Explanation?
+  flashcard      Flashcard?
+  quizQuestions  QuizQuestion[]
+  wrongQuestions WrongQuestion[]
+  attemptAnswers AttemptAnswer[]
+
+  @@index([examId])
+  @@index([topicId, difficulty])
+}
+
+model Choice {
+  id         String   @id @default(cuid())
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  label      String // "A" | "B" | "C" | "D"
+  content    String   @db.Text
+  order      Int
+
+  @@unique([questionId, label])
+  @@index([questionId])
+}
+
+model Answer {
+  id           String   @id @default(cuid())
+  questionId   String   @unique
+  question     Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  correctLabel String // อ้างอิง Choice.label ที่ถูก
+}
+
+model Explanation {
+  id         String   @id @default(cuid())
+  questionId String   @unique
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  reasoning  String   @db.Text // เหตุผลที่ตอบข้อนี้
+  concept    String   @db.Text // สรุปแนวคิดที่เกี่ยวข้อง
+}
+
+// ============================================================================
+// FLASHCARDS
+// ============================================================================
+
+model FlashcardSet {
+  id         String     @id @default(cuid())
+  userId     String
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title      String
+  folderId   String?
+  folder     Folder?    @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  visibility Visibility @default(PRIVATE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  flashcards Flashcard[]
+
+  @@index([userId])
+}
+
+model Flashcard {
+  id         String       @id @default(cuid())
+  setId      String
+  set        FlashcardSet @relation(fields: [setId], references: [id], onDelete: Cascade)
+  questionId String?      @unique // ถ้า generate มาจากข้อสอบเดิม
+  question   Question?    @relation(fields: [questionId], references: [id], onDelete: SetNull)
+  front      String       @db.Text // Question
+  back       String       @db.Text // Answer
+  hint       String?      @db.Text
+
+  @@index([setId])
+}
+
+// ============================================================================
+// QUIZ / ATTEMPT (Infinite Quiz — สุ่มจาก DB เท่านั้น ไม่เรียก AI)
+// ============================================================================
+
+model Quiz {
+  id         String     @id @default(cuid())
+  userId     String
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title      String
+  mode       QuizMode   @default(PRACTICE)
+  difficulty Difficulty? // null = ผสม
+  visibility Visibility @default(PRIVATE)
+  folderId   String?
+  folder     Folder?    @relation(fields: [folderId], references: [id], onDelete: SetNull)
+
+  // Community engagement counters (denormalized เพื่อ query เร็ว)
+  likeCount  Int @default(0)
+  solveCount Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  quizQuestions QuizQuestion[]
+  attempts      Attempt[]
+
+  @@index([userId])
+  @@index([visibility, likeCount])
+}
+
+model QuizQuestion {
+  id         String   @id @default(cuid())
+  quizId     String
+  quiz       Quiz     @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  order      Int // ลำดับข้อในชุด (snapshot ตอนสุ่ม)
+
+  @@unique([quizId, questionId])
+  @@index([quizId, order])
+}
+
+model Attempt {
+  id          String    @id @default(cuid())
+  quizId      String
+  quiz        Quiz      @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  score       Float?
+  totalCount  Int
+  correctCount Int      @default(0)
+  startedAt   DateTime  @default(now())
+  finishedAt  DateTime?
+  timeLimitSec Int? // สำหรับ Timed Mode
+
+  answers AttemptAnswer[]
+  analysis AttemptAnalysis?
+
+  @@index([userId, finishedAt])
+  @@index([quizId])
+}
+
+model AttemptAnalysis {
+  id             String   @id @default(cuid())
+  attemptId      String   @unique
+  attempt        Attempt  @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  overallSummary String   @db.Text
+  weakTopics     Json // [{ topic, percentage }]
+  strongTopics   Json // [{ topic, percentage }]
+  recommendation String   @db.Text
+  createdAt      DateTime @default(now())
+}
+
+model AttemptAnswer {
+  id           String   @id @default(cuid())
+  attemptId    String
+  attempt      Attempt  @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  questionId   String
+  question     Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  selectedLabel String? // คำตอบที่ผู้ใช้เลือก, null = ข้าม
+  isCorrect    Boolean
+  answeredAt   DateTime @default(now())
+
+  @@unique([attemptId, questionId])
+  @@index([questionId])
+}
+
+// ============================================================================
+// WRONG QUESTIONS / SPACED REPETITION
+// ============================================================================
+
+model WrongQuestion {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  questionId   String
+  question     Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  wrongCount   Int      @default(1)
+  reviewStage  Int      @default(0) // index เข้า intervalDays: [1,3,7,14,30]
+  nextReviewAt DateTime
+  lastReviewedAt DateTime?
+  resolved     Boolean  @default(false) // true เมื่อผ่านครบทุก stage แล้ว
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, questionId])
+  @@index([userId, nextReviewAt])
+  @@index([userId, wrongCount])
+}
+
+// ============================================================================
+// LIBRARY / FOLDER / SHARE / COMMUNITY
+// ============================================================================
+
+model Folder {
+  id       String   @id @default(cuid())
+  userId   String
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name     String
+  parentId String? // รองรับ nested folder
+  parent   Folder?  @relation("FolderTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children Folder[] @relation("FolderTree")
+  starred  Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  exams         Exam[]
+  quizzes       Quiz[]
+  flashcardSets FlashcardSet[]
+
+  @@index([userId, parentId])
+}
+
+model SharedLink {
+  id         String          @id @default(cuid())
+  userId     String
+  user       User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  slug       String          @unique // เช่น "AB12CD" ใช้เป็น /app/q/AB12CD
+  targetType ShareTargetType
+  targetId   String // id ของ Quiz / Folder / FlashcardSet (polymorphic)
+  visibility Visibility      @default(UNLISTED)
+  viewCount  Int             @default(0)
+
+  createdAt DateTime @default(now())
+  expiresAt DateTime?
+
+  @@index([targetType, targetId])
+}
+
+model Bookmark {
+  id         String             @id @default(cuid())
+  userId     String
+  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  targetType BookmarkTargetType
+  targetId   String
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, targetType, targetId])
+  @@index([userId])
+}
+
+model Report {
+  id         String   @id @default(cuid())
+  reporterId String
+  targetType ShareTargetType
+  targetId   String
+  reason     String   @db.Text
+  resolved   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([targetType, targetId])
+}
+
+// ============================================================================
+// AI COST / JOB MONITORING (AI Gateway Layer)
+// ============================================================================
+
+model AiUsageLog {
+  id           String   @id @default(cuid())
+  userId       String?
+  user         User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  jobType      String // "ocr" | "extraction" | "performance-analysis" | ...
+  provider     String // "gpt-5" | "claude" | "gemini" | "mistral-ocr"
+  inputTokens  Int      @default(0)
+  outputTokens Int      @default(0)
+  costUsd      Float    @default(0)
+  status       JobStatus @default(DONE)
+  createdAt    DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([jobType, createdAt])
+}
