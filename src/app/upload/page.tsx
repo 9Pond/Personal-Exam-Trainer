@@ -38,7 +38,7 @@ export default function UploadPage() {
       if (data.status === "READY" || data.status === "FAILED" || data.status === "PARTIAL") {
         if (pollRef.current) clearInterval(pollRef.current);
         // เมื่อประมวลผลเสร็จแล้วให้ไปหน้าข้อสอบ
-        if (data.status === "READY") router.push(`/quiz/${examId}`);
+        if (data.status === "READY") router.push(`/quiz/${data.examId}`);
       }
     }, 2500);
   }
