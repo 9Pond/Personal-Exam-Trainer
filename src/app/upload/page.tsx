@@ -12,7 +12,7 @@ type ExamStatus = {
 };
 
 export default function UploadPage() {
-  const router = useRouter(); // เพิ่ม router เพื่อใช้เปลี่ยนหน้า
+  const router = useRouter();
   const [title, setTitle] = useState("");
   const [subject, setSubject] = useState("");
   const [hasAnswerKey, setHasAnswerKey] = useState(true);
@@ -37,8 +37,8 @@ export default function UploadPage() {
 
       if (data.status === "READY" || data.status === "FAILED" || data.status === "PARTIAL") {
         if (pollRef.current) clearInterval(pollRef.current);
-        // เมื่อประมวลผลเสร็จแล้วให้ไปหน้าข้อสอบ
-        if (data.status === "READY") router.push(`/quiz/${data.examId}`);
+        // แก้ไขที่นี่: เติม /take ต่อท้าย
+        if (data.status === "READY") router.push(`/quiz/${examId}/take`);
       }
     }, 2500);
   }
@@ -69,9 +69,9 @@ export default function UploadPage() {
         return;
       }
 
-      // แก้ไขตรงนี้: ถ้าไฟล์ซ้ำ ให้ไปที่หน้าข้อสอบทันที
+      // แก้ไขที่นี่: เติม /take ต่อท้าย
       if (data.deduped) {
-        router.push(`/quiz/${data.examId}`);
+        router.push(`/quiz/${data.examId}/take`);
         return;
       }
 
@@ -87,7 +87,6 @@ export default function UploadPage() {
   return (
     <main className="mx-auto max-w-xl px-4 py-10 space-y-6">
       <h1 className="text-2xl font-semibold">อัปโหลดข้อสอบ</h1>
-
       <form onSubmit={handleSubmit} className="space-y-4">
         <input
           type="text"
@@ -103,7 +102,6 @@ export default function UploadPage() {
           onChange={(e) => setSubject(e.target.value)}
           className="w-full rounded-lg border px-3 py-2.5 text-sm"
         />
-
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
@@ -112,7 +110,6 @@ export default function UploadPage() {
           />
           ข้อสอบนี้มีเฉลยแนบอยู่ในเอกสาร
         </label>
-
         <input
           type="file"
           multiple
@@ -123,9 +120,7 @@ export default function UploadPage() {
         <p className="text-xs text-muted-foreground">
           รองรับ PDF (หลายหน้า) หรือรูปภาพหลายรูป — เลือกอย่างใดอย่างหนึ่ง
         </p>
-
         {error && <p className="text-sm text-red-500">{error}</p>}
-
         <button
           type="submit"
           disabled={submitting}
@@ -134,7 +129,6 @@ export default function UploadPage() {
           {submitting ? "กำลังอัปโหลด..." : "อัปโหลดและเริ่มวิเคราะห์"}
         </button>
       </form>
-
       {examStatus && (
         <div className="rounded-lg border p-4 space-y-2 text-sm">
           <p>
