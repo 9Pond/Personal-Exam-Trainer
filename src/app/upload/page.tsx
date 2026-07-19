@@ -38,7 +38,7 @@ export default function UploadPage() {
       if (data.status === "READY" || data.status === "FAILED" || data.status === "PARTIAL") {
         if (pollRef.current) clearInterval(pollRef.current);
         // เมื่อประมวลผลเสร็จแล้วให้ไปหน้าข้อสอบ
-        if (data.status === "READY") router.push(`/exams/${examId}`);
+        if (data.status === "READY") router.push(`/quiz/${examId}`);
       }
     }, 2500);
   }
@@ -71,7 +71,7 @@ export default function UploadPage() {
 
       // แก้ไขตรงนี้: ถ้าไฟล์ซ้ำ ให้ไปที่หน้าข้อสอบทันที
       if (data.deduped) {
-        router.push(`/exams/${data.examId}`);
+        router.push(`/quiz/${data.examId}`);
         return;
       }
 
