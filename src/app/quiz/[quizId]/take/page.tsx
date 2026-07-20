@@ -26,7 +26,7 @@ export default function TakeQuizPage() {
 
   useEffect(() => {
     async function init() {
-      const quizRes = await fetch(`/api/quizzes/123`);
+      const quizRes = await fetch(`/api/quizzes/test-123`);
       const quizData = await quizRes.json();
 
       if (!quizRes.ok) {
