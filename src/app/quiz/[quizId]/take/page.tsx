@@ -12,7 +12,7 @@ type Question = {
 };
 
 export default function TakeQuizPage() {
-  const params = useParams<{ examId: string }>();
+  const params = useParams<{ quizId: string }>();
   const router = useRouter();
 
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -26,7 +26,7 @@ export default function TakeQuizPage() {
 
   useEffect(() => {
     async function init() {
-      const quizRes = await fetch(`/api/quizzes/${params.examId}`);
+      const quizRes = await fetch(`/api/quizzes/${params.quizId}`);
       const quizData = await quizRes.json();
 
       if (!quizRes.ok) {
@@ -38,7 +38,7 @@ export default function TakeQuizPage() {
       setTitle(quizData.title);
       setQuestions(quizData.questions);
 
-      const attemptRes = await fetch(`/api/quizzes/${params.examId}/attempts`, {
+      const attemptRes = await fetch(`/api/quizzes/${params.quizId}/attempts`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
@@ -48,7 +48,7 @@ export default function TakeQuizPage() {
       setLoading(false);
     }
     init();
-  }, [params.examId]);
+  }, [params.quizId]);
 
   function selectAnswer(questionId: string, label: string) {
     setAnswers((prev) => ({ ...prev, [questionId]: label }));
